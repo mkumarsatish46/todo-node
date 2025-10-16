@@ -2,18 +2,15 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
-  build-and-deploy:
-    name: Build → Push Image → Deploy
-    runs-on: ubuntu-latest
   build:
     name: Build & Push Image
     runs-on: ubuntu-latest
     outputs:
-      image: ${{ steps.set-image.outputs.image }}
+      image: ${{ steps.push-image.outputs.image }}
 
     steps:
       - name: Checkout
@@ -25,21 +22,19 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - id: set-image
+      - id: vars
         name: Determine image names
         run: |
+          TAG=${GITHUB_SHA::7}
           if [ -n "${{ secrets.GHCR_TOKEN }}" ]; then
-            IMAGE=ghcr.io/${{ github.repository_owner }}/node-todo:${GITHUB_SHA::7}
-            IMAGE_LATEST=ghcr.io/${{ github.repository_owner }}/node-todo:latest
-            echo "REGISTRY=ghcr" >> $GITHUB_ENV
+            IMAGE=ghcr.io/${{ github.repository_owner }}/todo-node:${TAG}
+            IMAGE_LATEST=ghcr.io/${{ github.repository_owner }}/todo-node:latest
           else
-            IMAGE=${{ secrets.DOCKER_USERNAME }}/node-todo:${GITHUB_SHA::7}
-            IMAGE_LATEST=${{ secrets.DOCKER_USERNAME }}/node-todo:latest
-            echo "REGISTRY=dockerhub" >> $GITHUB_ENV
+            IMAGE=${{ secrets.DOCKER_USERNAME }}/todo-node:${TAG}
+            IMAGE_LATEST=${{ secrets.DOCKER_USERNAME }}/todo-node:latest
           fi
-          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
-          echo "IMAGE_LATEST=$IMAGE_LATEST" >> $GITHUB_ENV
-          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          echo "IMAGE=${IMAGE}" >> $GITHUB_ENV
+          echo "IMAGE_LATEST=${IMAGE_LATEST}" >> $GITHUB_ENV
 
       - name: Login to GHCR
         if: ${{ secrets.GHCR_TOKEN }}
@@ -58,6 +53,7 @@ jobs:
 
       - name: Build and push image
         uses: docker/build-push-action@v6
+        id: build
         with:
           context: .
           push: true
@@ -66,45 +62,38 @@ jobs:
             ${{ env.IMAGE_LATEST }}
           platforms: linux/amd64,linux/arm64
 
-  deploy-local:
-    name: Deploy to local Kubernetes (self-hosted runner)
-    needs: build
-    runs-on: [self-hosted]
-    # This job MUST run on a self-hosted runner that has Docker, kubectl and access to your local cluster.
+      - name: Set pushed image output
+        id: push-image
+        run: |
+          echo "image=${{ env.IMAGE }}" >> $GITHUB_OUTPUT
 
+  deploy:
+    name: Deploy to Kubernetes
+    needs: build
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout (optional)
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Login to Docker Hub (for pulling private images)
-        if: ${{ secrets.DOCKER_USERNAME && secrets.DOCKER_PASSWORD }}
-        run: |
-          echo "Logging into Docker Hub on the self-hosted runner"
-          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login --username "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
 
-      - name: (Optional) Write KUBECONFIG from secret
+      - name: Configure kubeconfig from secret
         if: ${{ secrets.KUBE_CONFIG }}
         run: |
-          echo "Writing kubeconfig from repository secret to runner workspace"
-          mkdir -p $RUNNER_WORKSPACE/.kube
-          echo "${{ secrets.KUBE_CONFIG }}" > $RUNNER_WORKSPACE/.kube/config
-          echo "KUBECONFIG=$RUNNER_WORKSPACE/.kube/config" >> $GITHUB_ENV
-
-      - name: Pull image on runner
-        run: |
-          echo "Pulling image ${{ needs.build.outputs.image }} on self-hosted runner"
-          docker pull ${{ needs.build.outputs.image }} || true
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
 
       - name: Apply manifests and update image
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
         run: |
-          echo "Applying k8s manifests"
           kubectl apply -f k8s/deployment.yaml
-          echo "Setting deployment image to the newly built image"
-          kubectl set image deployment/node-todo-deployment node-todo=${{ needs.build.outputs.image }} --record
+          kubectl set image deployment/node-todo-deployment node-todo=${IMAGE} --record
           kubectl rollout status deployment/node-todo-deployment --timeout=120s
 
-      - name: Confirm
+      - name: Confirm deployment
         run: |
           kubectl get pods -l app=node-todo -o wide
           kubectl get svc node-todo-service -o wide || true
-              - name: Pull image on runner
