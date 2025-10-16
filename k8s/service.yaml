@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-todo-service
+  labels:
+    app: node-todo
+spec:
+  # Change to NodePort if you need to expose on cluster nodes, or keep LoadBalancer for cloud LB
+  type: LoadBalancer
+  selector:
+    app: node-todo
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80         # port exposed by the Service
+      targetPort: 3000 # containerPort in the Deployment
+      # nodePort: 30080 # uncomment when using type: NodePort and you want a fixed node port
+
+# Alternative: NodePort manifest (uncomment and use if your cluster doesn't support LoadBalancer)
+# ---
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: node-todo-service-nodeport
+#   labels:
+#     app: node-todo
+# spec:
+#   type: NodePort
+#   selector:
+#     app: node-todo
+#   ports:
+#     - name: http
+#       protocol: TCP
+#       port: 3000
+#       targetPort: 3000
+#       nodePort: 30080
